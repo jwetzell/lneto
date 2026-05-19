@@ -97,7 +97,7 @@ func (i *SerialInterface) RecvEth(dst []byte) (int, error) {
 }
 
 func (i *SerialInterface) HardwareAddress6() ([6]byte, error) {
-	return [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x02}, nil
+	return [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}, nil
 }
 
 func (i *SerialInterface) MaxFrameLength() (int, error) {

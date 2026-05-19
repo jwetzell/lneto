@@ -93,7 +93,7 @@ func (i *SerialInterface) HardwareAddress6() ([6]byte, error) {
 }
 
 func (i *SerialInterface) MaxFrameLength() (int, error) {
-	return 500, nil
+	return 1500, nil
 }
 
 func NewTCPInterface(addr string) (*TCPInterface, error) {
