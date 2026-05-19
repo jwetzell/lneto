@@ -12,6 +12,7 @@ import (
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/x/xnet"
+	"go.bug.st/serial"
 )
 
 const pollTime = 5 * time.Millisecond
@@ -42,9 +43,86 @@ type Interface interface {
 	MaxFrameLength() (int, error)
 }
 
+type TCPInterface struct {
+	conn *net.TCPConn
+}
+
+func (i *TCPInterface) SendEth(frame []byte) error {
+	_, err := i.conn.Write(frame)
+	return err
+}
+
+func (i *TCPInterface) RecvEth(dst []byte) (int, error) {
+	return i.conn.Read(dst)
+}
+
+func (i *TCPInterface) HardwareAddress6() ([6]byte, error) {
+	return [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}, nil
+}
+
+func (i *TCPInterface) MaxFrameLength() (int, error) {
+	return 1500, nil
+}
+
+func NewTCPInterface(addr string) (*TCPInterface, error) {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return &TCPInterface{conn: conn.(*net.TCPConn)}, nil
+}
+
+type SerialInterface struct {
+	port serial.Port
+}
+
+func NewSerialInterface(portName string, baudRate int) (*SerialInterface, error) {
+	mode := &serial.Mode{
+		BaudRate: baudRate,
+	}
+	port, err := serial.Open(portName, mode)
+	if err != nil {
+		return nil, err
+	}
+	return &SerialInterface{port: port}, nil
+}
+
+func (i *SerialInterface) SendEth(frame []byte) error {
+	_, err := i.port.Write(frame)
+	return err
+}
+
+func (i *SerialInterface) RecvEth(dst []byte) (int, error) {
+	return i.port.Read(dst)
+}
+
+func (i *SerialInterface) HardwareAddress6() ([6]byte, error) {
+	return [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x02}, nil
+}
+
+func (i *SerialInterface) MaxFrameLength() (int, error) {
+	return 1500, nil
+}
+
 func main() {
 	var stack xnet.StackAsync
 	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		iface, err := NewSerialInterface("/dev/cu.usbserial-B00214C8", 115200)
+		if err != nil {
+			fmt.Println("failed to create serial interface:", err)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		network = iface
+		break
+	}
+	if network == nil {
+		fmt.Println("failed to create serial interface after retries")
+		os.Exit(1)
+	}
+
 	if err := run(ctx, &stack); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -61,6 +139,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 		return err
 	}
 	err = stack.Reset(xnet.StackConfig{
+		StaticAddress4: [4]byte{192,168,0,1},
 		Hostname: "lneto-mwe",
 		RandSeed: time.Now().UnixNano(),
 		// A passive TCP listener to many remote ports takes up one spot, active TCP clients to one remote port take up a spot.
@@ -79,20 +158,6 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 	// Other option is to instead use async API which leads to more verbose
 	// and more stateful code.
 	go stackLoop(ctx, stack)
-	rstack := stack.StackRetrying(stackBackoff)
-	results, err := rstack.DoDHCPv4([4]byte{}, protoTimeout, protoRetries)
-	if err != nil {
-		return fmt.Errorf("doing DHCP: %w", err)
-	}
-	err = stack.AssimilateDHCPResults(results)
-	if err != nil {
-		return fmt.Errorf("assimilating DHCP: %w", err)
-	}
-	gateway, err := rstack.DoResolveHardwareAddress6(results.Router, protoTimeout, protoRetries)
-	if err != nil {
-		return fmt.Errorf("resolving router MAC: %w", err)
-	}
-	stack.SetGateway6(gateway)
 	berkstack := stack.StackBlocking(stackBackoff).StackGo(xnet.StackGoConfig{
 		ListenerPoolConfig: xnet.TCPPoolConfig{
 			PoolSize:           tcpConnPoolSize,
@@ -105,7 +170,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 		},
 	})
 
-	laddr := net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.AddrFrom4(results.AssignedAddr4), 80))
+	laddr := net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 168, 0, 1}), 80))
 	// raddr := net.TCPAddr{} // If active (client) connection then set raddr in which case a net.Conn type is returned.
 	const sockstream = 0x1
 	c, err := berkstack.Socket(ctx, "tcp", syscall.AF_INET, sockstream, laddr, nil)
@@ -130,6 +195,7 @@ func handleConn(conn net.Conn) {
 
 	// Do something with conn.
 	conn.Write([]byte("Hello!"))
+	fmt.Println("handled connection")
 }
 
 func stackLoop(ctx context.Context, stack *xnet.StackAsync) {
